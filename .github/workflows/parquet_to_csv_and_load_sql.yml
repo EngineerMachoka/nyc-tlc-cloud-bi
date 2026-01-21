@@ -61,7 +61,7 @@ jobs:
 
       # ------------------------------------------------------------
       # PHASE 1: Download from CloudFront -> Upload Parquet to Blob
-      # Requires script: scripts/download_and_upload_yellow_parquet.py
+      # Requires script: scripts/download_yellow_parquet.py
       # This script must upload to: parquet/yellow/year=YYYY/...
       # and must read env var: DELETE_EXISTING (yes/no)
       # ------------------------------------------------------------
@@ -80,7 +80,7 @@ jobs:
           # Delete Parquet blobs? script reads DELETE_EXISTING
           DELETE_EXISTING: ${{ github.event.inputs.delete_existing_parquet || 'no' }}
         run: |
-          python scripts/download_and_upload_yellow_parquet.py
+          python scripts/download_yellow_parquet.py
 
       # ------------------------------------------------------------
       # PHASE 2: Parquet in Blob -> CSV in Blob -> BULK INSERT -> SQL procs
