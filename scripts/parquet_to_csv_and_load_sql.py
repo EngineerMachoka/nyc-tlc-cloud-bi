@@ -28,10 +28,7 @@ def is_current_month(y: int, m: int) -> bool:
     return t.year == y and t.month == m
 
 def blob_container():
-    svc = BlobServiceClient(
-        account_url=env("STORAGE_ACCOUNT_URL"),
-        credential=env("STORAGE_ACCOUNT_KEY")
-    )
+    svc = BlobServiceClient(account_url=env("STORAGE_ACCOUNT_URL"), credential=env("STORAGE_ACCOUNT_KEY"))
     return svc.get_container_client(env("STORAGE_CONTAINER"))  # should be 'raw'
 
 def sql_conn():
@@ -55,12 +52,11 @@ def exists_in_download_log(cur, y: int, m: int) -> bool:
     return cur.fetchone() is not None
 
 def main():
-    # Range controls (recommended: run small range first)
-    # Example: START=2024-10 END=2024-12
+    # Range from env (workflow inputs), fallback defaults
     start_y = int(os.getenv("START_YEAR", "2024"))
-    start_m = int(os.getenv("START_MONTH", "10"))
+    start_m = int(os.getenv("START_MONTH", "11"))
     end_y   = int(os.getenv("END_YEAR", "2024"))
-    end_m   = int(os.getenv("END_MONTH", "12"))
+    end_m   = int(os.getenv("END_MONTH", "11"))
 
     # Destructive switch for CSV blobs only
     delete_existing_csv = os.getenv("DELETE_EXISTING_CSV", "no").lower() == "yes"
@@ -83,27 +79,25 @@ def main():
         print(f"CSV:     {csv_blob}")
 
         try:
-            # Safety: skip historical months already processed (optional, you can disable later)
             already = exists_in_download_log(cur, y, m)
             if already and not is_current_month(y, m):
                 print("SKIP → already processed (historical)")
                 skipped += 1
                 continue
 
-            # Parquet must exist
             parquet_client = container.get_blob_client(parquet_blob)
             if not parquet_client.exists():
                 print("SKIP → parquet not found in Blob")
                 skipped += 1
                 continue
 
-            # CSV handling
             csv_client = container.get_blob_client(csv_blob)
             if csv_client.exists() and delete_existing_csv:
                 csv_client.delete_blob()
                 csv_deleted += 1
                 print("Deleted existing CSV blob (DELETE_EXISTING_CSV=yes)")
 
+            # Convert only if CSV not present (or deleted)
             if csv_client.exists() and not delete_existing_csv:
                 print("CSV exists → reuse (no reconvert)")
             else:
@@ -122,15 +116,16 @@ def main():
                 # Upload CSV to Blob
                 with open(csv_path, "rb") as f:
                     csv_client.upload_blob(f, overwrite=True)
+
                 print("Converted and uploaded CSV")
 
-            # Optional: current month refresh
+            # Current month refresh (optional proc; if missing, it will fail here)
             if already and is_current_month(y, m):
                 cur.execute("EXEC dbo.usp_delete_month_refresh @taxi_type=?, @year=?, @month=?",
                             (TAXI_TYPE, y, m))
                 cn.commit()
 
-            # Log (if proc exists)
+            # Log (optional proc; if missing, ignore)
             try:
                 cur.execute("""
                     EXEC dbo.usp_log_download_start
@@ -152,10 +147,9 @@ def main():
                 ))
                 cn.commit()
             except Exception:
-                # If you don't have that proc, it's fine
                 cn.rollback()
 
-            # Load CSV → SQL RAW
+            # Load CSV → SQL RAW (RAW is landing table, overwritten each month)
             cur.execute("TRUNCATE TABLE dbo.stg_yellow_trip_raw;")
             cn.commit()
 
@@ -201,6 +195,10 @@ def main():
     cur.close()
     cn.close()
     print(f"\nDONE → processed={processed}, skipped={skipped}, failed={failed}, csv_deleted={csv_deleted}")
+
+    if failed > 0:
+        print("Completed with some failures. Check logs above.")
+
 
 if __name__ == "__main__":
     main()
