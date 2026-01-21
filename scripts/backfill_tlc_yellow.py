@@ -7,6 +7,8 @@ from dateutil.relativedelta import relativedelta
 from azure.storage.blob import BlobServiceClient
 import pyodbc
 
+FORCE_REPROCESS = os.getenv("FORCE_REPROCESS", "false").lower() == "true"
+
 # -------------------------------------------------
 # CONFIG
 # -------------------------------------------------
@@ -116,10 +118,10 @@ def main():
         csv_blob_path = f"csv/yellow/year={y}/yellow_tripdata_{y}-{m:02d}.csv"
 
         # Skip historical months already processed
-        if exists_in_download_log(cur, y, m) and not is_current_month(y, m):
-            print("SKIP: already processed (historical)")
+        if exists_in_download_log(cur, y, m) and not is_current_month(y, m) and not FORCE_REPROCESS:
             skipped += 1
             continue
+
 
         try:
             # Refresh current month if needed
