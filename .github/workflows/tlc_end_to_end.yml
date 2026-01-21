@@ -59,36 +59,33 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ------------------------------------------------------------
-      # PHASE 1: Download from CloudFront -> Upload Parquet to Blob
-      # Requires script: scripts/download_yellow_parquet.py
-      # This script must upload to: parquet/yellow/year=YYYY/...
-      # and must read env var: DELETE_EXISTING (yes/no)
-      # ------------------------------------------------------------
+      - name: Debug – list scripts directory
+        run: |
+          ls -la scripts
+
+      # -------------------------
+      # PHASE 1: CloudFront -> Blob (Parquet)
+      # Script: scripts/download_yellow_parquet.py
+      # -------------------------
       - name: Phase 1 - Download Parquet and Upload to Azure Blob
         env:
           STORAGE_ACCOUNT_URL: ${{ secrets.STORAGE_ACCOUNT_URL }}
           STORAGE_CONTAINER: ${{ secrets.STORAGE_CONTAINER }}
           STORAGE_ACCOUNT_KEY: ${{ secrets.STORAGE_ACCOUNT_KEY }}
 
-          # Date range passed to script (recommended)
           START_YEAR: ${{ github.event.inputs.start_year || '2024' }}
           START_MONTH: ${{ github.event.inputs.start_month || '11' }}
           END_YEAR: ${{ github.event.inputs.end_year || '2024' }}
           END_MONTH: ${{ github.event.inputs.end_month || '11' }}
 
-          # Delete Parquet blobs? script reads DELETE_EXISTING
           DELETE_EXISTING: ${{ github.event.inputs.delete_existing_parquet || 'no' }}
         run: |
           python scripts/download_yellow_parquet.py
 
-      # ------------------------------------------------------------
-      # PHASE 2: Parquet in Blob -> CSV in Blob -> BULK INSERT -> SQL procs
-      # Requires script: scripts/parquet_to_csv_and_load_sql.py
-      # Script reads:
-      #   START_YEAR/START_MONTH/END_YEAR/END_MONTH
-      #   DELETE_EXISTING_CSV (yes/no)
-      # ------------------------------------------------------------
+      # -------------------------
+      # PHASE 2: Blob Parquet -> Blob CSV -> Azure SQL
+      # Script: scripts/parquet_to_csv_and_load_sql.py
+      # -------------------------
       - name: Phase 2 - Convert Parquet->CSV and Load Azure SQL
         env:
           STORAGE_ACCOUNT_URL: ${{ secrets.STORAGE_ACCOUNT_URL }}
