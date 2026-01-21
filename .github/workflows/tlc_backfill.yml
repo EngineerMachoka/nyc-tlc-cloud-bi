@@ -58,6 +58,7 @@ jobs:
           START_YEAR: ${{ github.event.inputs.start_year }}
           START_MONTH: ${{ github.event.inputs.start_month }}
           MONTHS_COUNT: ${{ github.event.inputs.months_count }}
+          FORCE_REPROCESS: "true"
 
         run: |
           python scripts/backfill_tlc_yellow.py
