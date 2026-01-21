@@ -1,0 +1,110 @@
+name: NYC TLC End-to-End (Parquet -> Blob -> CSV -> SQL)
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_year:
+        description: "Start year (e.g. 2024)"
+        required: true
+        default: "2024"
+      start_month:
+        description: "Start month (1-12)"
+        required: true
+        default: "11"
+      end_year:
+        description: "End year (e.g. 2024)"
+        required: true
+        default: "2024"
+      end_month:
+        description: "End month (1-12)"
+        required: true
+        default: "11"
+      delete_existing_parquet:
+        description: "Delete existing Parquet blobs before upload? (yes/no)"
+        required: true
+        default: "no"
+      delete_existing_csv:
+        description: "Delete existing CSV blobs before upload? (yes/no)"
+        required: true
+        default: "no"
+
+  schedule:
+    # Monthly run: 02:15 UTC on the 2nd day of each month
+    - cron: "15 2 2 * *"
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Microsoft ODBC Driver 18 (for Azure SQL)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl apt-transport-https gnupg
+          curl https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
+          curl https://packages.microsoft.com/config/ubuntu/22.04/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
+          sudo apt-get update
+          sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 unixodbc-dev
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ------------------------------------------------------------
+      # PHASE 1: Download from CloudFront -> Upload Parquet to Blob
+      # Requires script: scripts/download_and_upload_yellow_parquet.py
+      # This script must upload to: parquet/yellow/year=YYYY/...
+      # and must read env var: DELETE_EXISTING (yes/no)
+      # ------------------------------------------------------------
+      - name: Phase 1 - Download Parquet and Upload to Azure Blob
+        env:
+          STORAGE_ACCOUNT_URL: ${{ secrets.STORAGE_ACCOUNT_URL }}
+          STORAGE_CONTAINER: ${{ secrets.STORAGE_CONTAINER }}
+          STORAGE_ACCOUNT_KEY: ${{ secrets.STORAGE_ACCOUNT_KEY }}
+
+          # Date range passed to script (recommended)
+          START_YEAR: ${{ github.event.inputs.start_year || '2024' }}
+          START_MONTH: ${{ github.event.inputs.start_month || '11' }}
+          END_YEAR: ${{ github.event.inputs.end_year || '2024' }}
+          END_MONTH: ${{ github.event.inputs.end_month || '11' }}
+
+          # Delete Parquet blobs? script reads DELETE_EXISTING
+          DELETE_EXISTING: ${{ github.event.inputs.delete_existing_parquet || 'no' }}
+        run: |
+          python scripts/download_and_upload_yellow_parquet.py
+
+      # ------------------------------------------------------------
+      # PHASE 2: Parquet in Blob -> CSV in Blob -> BULK INSERT -> SQL procs
+      # Requires script: scripts/parquet_to_csv_and_load_sql.py
+      # Script reads:
+      #   START_YEAR/START_MONTH/END_YEAR/END_MONTH
+      #   DELETE_EXISTING_CSV (yes/no)
+      # ------------------------------------------------------------
+      - name: Phase 2 - Convert Parquet->CSV and Load Azure SQL
+        env:
+          STORAGE_ACCOUNT_URL: ${{ secrets.STORAGE_ACCOUNT_URL }}
+          STORAGE_CONTAINER: ${{ secrets.STORAGE_CONTAINER }}
+          STORAGE_ACCOUNT_KEY: ${{ secrets.STORAGE_ACCOUNT_KEY }}
+
+          SQL_SERVER: ${{ secrets.SQL_SERVER }}
+          SQL_DATABASE: ${{ secrets.SQL_DATABASE }}
+          SQL_USERNAME: ${{ secrets.SQL_USERNAME }}
+          SQL_PASSWORD: ${{ secrets.SQL_PASSWORD }}
+
+          START_YEAR: ${{ github.event.inputs.start_year || '2024' }}
+          START_MONTH: ${{ github.event.inputs.start_month || '11' }}
+          END_YEAR: ${{ github.event.inputs.end_year || '2024' }}
+          END_MONTH: ${{ github.event.inputs.end_month || '11' }}
+
+          DELETE_EXISTING_CSV: ${{ github.event.inputs.delete_existing_csv || 'no' }}
+        run: |
+          python scripts/parquet_to_csv_and_load_sql.py
