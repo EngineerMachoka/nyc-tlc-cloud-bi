@@ -21,5 +21,10 @@ jobs:
 
 
       - name: Run downloader
+        env:
+          STORAGE_ACCOUNT_URL: ${{ secrets.STORAGE_ACCOUNT_URL }}
+          STORAGE_CONTAINER: ${{ secrets.STORAGE_CONTAINER }}
+          STORAGE_ACCOUNT_KEY: ${{ secrets.STORAGE_ACCOUNT_KEY }}
         run: |
           python scripts/download_yellow_parquet.py
+
