@@ -4,5 +4,5 @@ pyarrow
 azure-storage-blob
 pyodbc
 python-dateutil
-requests
-python-dateutil
+azure-storage-blob
+
