@@ -1,0 +1,24 @@
+name: Download NYC TLC Yellow Parquet
+
+on:
+  workflow_dispatch:
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install requests python-dateutil
+
+      - name: Run downloader
+        run: |
+          python scripts/download_yellow_parquet.py
