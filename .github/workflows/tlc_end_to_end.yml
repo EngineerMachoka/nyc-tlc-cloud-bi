@@ -24,9 +24,14 @@ on:
         default: "10"
 
       force_reprocess:
-        description: "FORCE full reprocessing (ignore logs, rebuild CSVs)? yes/no"
+        description: "Force full reprocess (ignore logs, rebuild CSVs)? yes/no"
         required: true
         default: "no"
+
+      confirm_force:
+        description: "Type YES to confirm force reprocess (required if force_reprocess=yes)"
+        required: false
+        default: ""
 
       delete_existing_csv:
         description: "Delete existing CSV blobs before rebuild? yes/no"
@@ -50,9 +55,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      # ---------------------------------------------
       # Required for pyodbc → Azure SQL
-      # ---------------------------------------------
       - name: Install Microsoft ODBC Driver 18
         run: |
           sudo apt-get update
@@ -85,10 +88,22 @@ jobs:
           END_YEAR: ${{ github.event.inputs.end_year }}
           END_MONTH: ${{ github.event.inputs.end_month }}
 
-          # Never auto-delete Parquet unless you explicitly change script
+          # Safe default: never delete Parquet automatically
           DELETE_EXISTING: "no"
         run: |
           python scripts/download_yellow_parquet.py
+
+      # =========================================================
+      # SAFETY GATE — "Prompt-like" confirmation for destructive run
+      # =========================================================
+      - name: Safety gate – confirm FORCE_REPROCESS
+        run: |
+          echo "force_reprocess=${{ github.event.inputs.force_reprocess }}"
+          echo "confirm_force=${{ github.event.inputs.confirm_force }}"
+          if [ "${{ github.event.inputs.force_reprocess }}" = "yes" ] && [ "${{ github.event.inputs.confirm_force }}" != "YES" ]; then
+            echo "ERROR: You set force_reprocess=yes but did not type confirm_force=YES"
+            exit 1
+          fi
 
       # =========================================================
       # PHASE 2 — Parquet → CSV → BULK INSERT → FACT
@@ -109,9 +124,8 @@ jobs:
           END_YEAR: ${{ github.event.inputs.end_year }}
           END_MONTH: ${{ github.event.inputs.end_month }}
 
-          # 🔥 CONTROL FLAGS 🔥
+          # Control flags
           FORCE_REPROCESS: ${{ github.event.inputs.force_reprocess }}
           DELETE_EXISTING_CSV: ${{ github.event.inputs.delete_existing_csv }}
-
         run: |
           python scripts/parquet_to_csv_and_load_sql.py
