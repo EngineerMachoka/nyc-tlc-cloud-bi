@@ -17,7 +17,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests python-dateutil
+          pip install requests python-dateutil azure-storage-blob
+
 
       - name: Run downloader
         run: |
