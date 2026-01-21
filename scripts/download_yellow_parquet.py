@@ -104,7 +104,7 @@ def main():
 
     for y, m in month_range(START_YEAR, START_MONTH, END_YEAR, END_MONTH):
         url = build_url(y, m)
-        blob_path = f"raw/parquet/yellow/year={y}/yellow_tripdata_{y}-{m:02d}.parquet"
+        blob_path = f"parquet/yellow/year={y}/yellow_tripdata_{y}-{m:02d}.parquet"
 
         print(f"\n=== {y}-{m:02d} ===")
         print(f"URL:  {url}")
