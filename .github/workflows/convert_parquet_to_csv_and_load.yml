@@ -1,28 +1,21 @@
-    - name: Install Microsoft ODBC Driver 18
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y curl apt-transport-https gnupg
-          curl https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
-          curl https://packages.microsoft.com/config/ubuntu/22.04/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
-          sudo apt-get update
-          sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 unixodbc-dev
+- name: Parquet → CSV → Load Azure SQL
+  env:
+    STORAGE_ACCOUNT_URL: ${{ secrets.STORAGE_ACCOUNT_URL }}
+    STORAGE_CONTAINER: ${{ secrets.STORAGE_CONTAINER }}
+    STORAGE_ACCOUNT_KEY: ${{ secrets.STORAGE_ACCOUNT_KEY }}
 
-    - name: Convert Parquet→CSV and Load Azure SQL
-        env:
-          STORAGE_ACCOUNT_URL: ${{ secrets.STORAGE_ACCOUNT_URL }}
-          STORAGE_CONTAINER: ${{ secrets.STORAGE_CONTAINER }}
-          STORAGE_ACCOUNT_KEY: ${{ secrets.STORAGE_ACCOUNT_KEY }}
+    SQL_SERVER: ${{ secrets.SQL_SERVER }}
+    SQL_DATABASE: ${{ secrets.SQL_DATABASE }}
+    SQL_USERNAME: ${{ secrets.SQL_USERNAME }}
+    SQL_PASSWORD: ${{ secrets.SQL_PASSWORD }}
 
-          SQL_SERVER: ${{ secrets.SQL_SERVER }}
-          SQL_DATABASE: ${{ secrets.SQL_DATABASE }}
-          SQL_USERNAME: ${{ secrets.SQL_USERNAME }}
-          SQL_PASSWORD: ${{ secrets.SQL_PASSWORD }}
+    # FIRST TEST RANGE (recommended)
+    START_YEAR: "2022"
+    START_MONTH: "10"
+    END_YEAR: "2025"
+    END_MONTH: "10"
 
-          # OPTIONAL RANGE (set for your first run)
-          START_YEAR: "2022"
-          START_MONTH: "10"
-          END_YEAR: "2025"
-          END_MONTH: "10"
-
-        run: |
-          python scripts/convert_parquet_to_csv_and_load_sql.py
+    # delete existing CSV blobs?
+    DELETE_EXISTING_CSV: "no"
+  run: |
+    python scripts/parquet_to_csv_and_load_sql.py
