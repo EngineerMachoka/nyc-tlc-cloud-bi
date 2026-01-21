@@ -23,10 +23,6 @@ def month_range(start_y: int, start_m: int, end_y: int, end_m: int):
         yield d.year, d.month
         d += relativedelta(months=1)
 
-def is_current_month(y: int, m: int) -> bool:
-    t = datetime.today()
-    return t.year == y and t.month == m
-
 def blob_container():
     svc = BlobServiceClient(account_url=env("STORAGE_ACCOUNT_URL"), credential=env("STORAGE_ACCOUNT_KEY"))
     return svc.get_container_client(env("STORAGE_CONTAINER"))  # should be 'raw'
@@ -52,23 +48,24 @@ def exists_in_download_log(cur, y: int, m: int) -> bool:
     return cur.fetchone() is not None
 
 def main():
-    # Range from env (workflow inputs), fallback defaults
-    start_y = int(os.getenv("START_YEAR", "2024"))
-    start_m = int(os.getenv("START_MONTH", "11"))
-    end_y   = int(os.getenv("END_YEAR", "2024"))
-    end_m   = int(os.getenv("END_MONTH", "11"))
+    start_y = int(os.getenv("START_YEAR", "2022"))
+    start_m = int(os.getenv("START_MONTH", "10"))
+    end_y   = int(os.getenv("END_YEAR", "2025"))
+    end_m   = int(os.getenv("END_MONTH", "10"))
 
-    # Destructive switch for CSV blobs only
+    # ✅ THESE ARE THE FLAGS YOU EXPECT FROM WORKFLOW
+    force_reprocess = os.getenv("FORCE_REPROCESS", "no").lower() == "yes"
     delete_existing_csv = os.getenv("DELETE_EXISTING_CSV", "no").lower() == "yes"
+
+    print(f"FORCE_REPROCESS = {force_reprocess}")
+    print(f"DELETE_EXISTING_CSV = {delete_existing_csv}")
+    print(f"Range: {start_y}-{start_m:02d} to {end_y}-{end_m:02d}")
 
     container = blob_container()
     cn = sql_conn()
     cur = cn.cursor()
 
     processed = skipped = failed = csv_deleted = 0
-
-    print(f"DELETE_EXISTING_CSV = {delete_existing_csv}")
-    print(f"Range: {start_y}-{start_m:02d} to {end_y}-{end_m:02d}")
 
     for (y, m) in month_range(start_y, start_m, end_y, end_m):
         parquet_blob = f"parquet/yellow/year={y}/yellow_tripdata_{y}-{m:02d}.parquet"
@@ -79,28 +76,38 @@ def main():
         print(f"CSV:     {csv_blob}")
 
         try:
-            already = exists_in_download_log(cur, y, m)
-            if already and not is_current_month(y, m):
-                print("SKIP → already processed (historical)")
-                skipped += 1
-                continue
-
             parquet_client = container.get_blob_client(parquet_blob)
             if not parquet_client.exists():
                 print("SKIP → parquet not found in Blob")
                 skipped += 1
                 continue
 
+            already = exists_in_download_log(cur, y, m)
+
+            # ✅ Only skip if NOT forcing
+            if already and not force_reprocess:
+                print("SKIP → already processed (historical)")
+                skipped += 1
+                continue
+
+            if already and force_reprocess:
+                print("FORCE REPROCESS → ignoring download_log status")
+
             csv_client = container.get_blob_client(csv_blob)
-            if csv_client.exists() and delete_existing_csv:
+
+            # ✅ Always delete CSV when forcing, to rebuild cleanly
+            if force_reprocess and csv_client.exists():
                 csv_client.delete_blob()
                 csv_deleted += 1
-                print("Deleted existing CSV blob (DELETE_EXISTING_CSV=yes)")
+                print("FORCE REPROCESS → deleted existing CSV")
 
-            # Convert only if CSV not present (or deleted)
-            if csv_client.exists() and not delete_existing_csv:
-                print("CSV exists → reuse (no reconvert)")
-            else:
+            # Optional delete in non-force mode
+            if (not force_reprocess) and delete_existing_csv and csv_client.exists():
+                csv_client.delete_blob()
+                csv_deleted += 1
+                print("Deleted existing CSV (DELETE_EXISTING_CSV=yes)")
+
+            if not csv_client.exists():
                 # Download parquet to temp file
                 with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as pf:
                     parquet_path = pf.name
@@ -118,38 +125,10 @@ def main():
                     csv_client.upload_blob(f, overwrite=True)
 
                 print("Converted and uploaded CSV")
+            else:
+                print("CSV exists → reuse")
 
-            # Current month refresh (optional proc; if missing, it will fail here)
-            if already and is_current_month(y, m):
-                cur.execute("EXEC dbo.usp_delete_month_refresh @taxi_type=?, @year=?, @month=?",
-                            (TAXI_TYPE, y, m))
-                cn.commit()
-
-            # Log (optional proc; if missing, ignore)
-            try:
-                cur.execute("""
-                    EXEC dbo.usp_log_download_start
-                        @taxi_type=?,
-                        @year=?,
-                        @month=?,
-                        @file_name=?,
-                        @file_url=?,
-                        @blob_path=?,
-                        @status=?,
-                        @message=?;
-                """, (
-                    TAXI_TYPE, y, m,
-                    f"yellow_tripdata_{y}-{m:02d}.csv",
-                    parquet_blob,
-                    f"raw/{csv_blob}",
-                    "downloaded",
-                    "Blob parquet → Blob CSV → BULK INSERT → stage → fact"
-                ))
-                cn.commit()
-            except Exception:
-                cn.rollback()
-
-            # Load CSV → SQL RAW (RAW is landing table, overwritten each month)
+            # Load CSV → SQL RAW
             cur.execute("TRUNCATE TABLE dbo.stg_yellow_trip_raw;")
             cn.commit()
 
@@ -183,22 +162,10 @@ def main():
         except Exception as e:
             print(f"FAILED → {e}")
             failed += 1
-            try:
-                cur.execute("""
-                    INSERT INTO dbo.etl_run_log(taxi_type,[year],[month],status,message)
-                    VALUES (?,?,?,'failed',?);
-                """, (TAXI_TYPE, y, m, str(e)[:3900]))
-                cn.commit()
-            except Exception:
-                pass
 
     cur.close()
     cn.close()
     print(f"\nDONE → processed={processed}, skipped={skipped}, failed={failed}, csv_deleted={csv_deleted}")
-
-    if failed > 0:
-        print("Completed with some failures. Check logs above.")
-
 
 if __name__ == "__main__":
     main()
