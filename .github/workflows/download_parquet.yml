@@ -25,7 +25,7 @@ jobs:
           STORAGE_ACCOUNT_URL: ${{ secrets.STORAGE_ACCOUNT_URL }}
           STORAGE_CONTAINER: ${{ secrets.STORAGE_CONTAINER }}
           STORAGE_ACCOUNT_KEY: ${{ secrets.STORAGE_ACCOUNT_KEY }}
-          DELETE_EXISTING: "no"
+          DELETE_EXISTING: "yes"
         run: |
           python scripts/download_yellow_parquet.py
 
