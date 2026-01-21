@@ -7,7 +7,6 @@ import pandas as pd
 import pyodbc
 from azure.storage.blob import BlobServiceClient
 
-
 TAXI_TYPE = "yellow"
 EXTERNAL_DATA_SOURCE = "AzureBlobStorage"  # must match your SQL external data source name
 
@@ -17,10 +16,6 @@ def env(name: str) -> str:
         raise RuntimeError(f"Missing environment variable: {name}")
     return v
 
-def is_current_month(y: int, m: int) -> bool:
-    t = datetime.today()
-    return t.year == y and t.month == m
-
 def month_range(start_y: int, start_m: int, end_y: int, end_m: int):
     d = datetime(start_y, start_m, 1)
     end = datetime(end_y, end_m, 1)
@@ -28,9 +23,16 @@ def month_range(start_y: int, start_m: int, end_y: int, end_m: int):
         yield d.year, d.month
         d += relativedelta(months=1)
 
+def is_current_month(y: int, m: int) -> bool:
+    t = datetime.today()
+    return t.year == y and t.month == m
+
 def blob_container():
-    svc = BlobServiceClient(account_url=env("STORAGE_ACCOUNT_URL"), credential=env("STORAGE_ACCOUNT_KEY"))
-    return svc.get_container_client(env("STORAGE_CONTAINER"))
+    svc = BlobServiceClient(
+        account_url=env("STORAGE_ACCOUNT_URL"),
+        credential=env("STORAGE_ACCOUNT_KEY")
+    )
+    return svc.get_container_client(env("STORAGE_CONTAINER"))  # should be 'raw'
 
 def sql_conn():
     conn_str = (
@@ -53,89 +55,107 @@ def exists_in_download_log(cur, y: int, m: int) -> bool:
     return cur.fetchone() is not None
 
 def main():
-    # Default range = last 12 months (safer for first run)
-    # Override via env: START_YEAR, START_MONTH, END_YEAR, END_MONTH
-    today = datetime.today().replace(day=1)
-    default_start = today - relativedelta(months=11)
+    # Range controls (recommended: run small range first)
+    # Example: START=2024-10 END=2024-12
+    start_y = int(os.getenv("START_YEAR", "2024"))
+    start_m = int(os.getenv("START_MONTH", "10"))
+    end_y   = int(os.getenv("END_YEAR", "2024"))
+    end_m   = int(os.getenv("END_MONTH", "12"))
 
-    start_y = int(os.getenv("START_YEAR", default_start.year))
-    start_m = int(os.getenv("START_MONTH", default_start.month))
-    end_y   = int(os.getenv("END_YEAR", today.year))
-    end_m   = int(os.getenv("END_MONTH", today.month))
+    # Destructive switch for CSV blobs only
+    delete_existing_csv = os.getenv("DELETE_EXISTING_CSV", "no").lower() == "yes"
 
     container = blob_container()
     cn = sql_conn()
     cur = cn.cursor()
 
-    processed = skipped = failed = 0
+    processed = skipped = failed = csv_deleted = 0
+
+    print(f"DELETE_EXISTING_CSV = {delete_existing_csv}")
+    print(f"Range: {start_y}-{start_m:02d} to {end_y}-{end_m:02d}")
 
     for (y, m) in month_range(start_y, start_m, end_y, end_m):
         parquet_blob = f"parquet/yellow/year={y}/yellow_tripdata_{y}-{m:02d}.parquet"
         csv_blob     = f"csv/yellow/year={y}/yellow_tripdata_{y}-{m:02d}.csv"
 
         print(f"\n=== {y}-{m:02d} ===")
-        print(f"Parquet blob: {parquet_blob}")
-        print(f"CSV blob:     {csv_blob}")
-
-        # Skip historical months already processed (protects your warehouse)
-        already = exists_in_download_log(cur, y, m)
-        if already and not is_current_month(y, m):
-            print("SKIP → already processed (historical)")
-            skipped += 1
-            continue
+        print(f"Parquet: {parquet_blob}")
+        print(f"CSV:     {csv_blob}")
 
         try:
-            # Ensure parquet exists in Blob
+            # Safety: skip historical months already processed (optional, you can disable later)
+            already = exists_in_download_log(cur, y, m)
+            if already and not is_current_month(y, m):
+                print("SKIP → already processed (historical)")
+                skipped += 1
+                continue
+
+            # Parquet must exist
             parquet_client = container.get_blob_client(parquet_blob)
             if not parquet_client.exists():
                 print("SKIP → parquet not found in Blob")
                 skipped += 1
                 continue
 
-            # Download parquet to a temp file (avoids memory blow-ups)
-            with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as pf:
-                parquet_path = pf.name
-                pf.write(parquet_client.download_blob().readall())
-
-            # Convert parquet → csv (temp file)
-            with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as cf:
-                csv_path = cf.name
-
-            df = pd.read_parquet(parquet_path)
-            df.to_csv(csv_path, index=False)
-
-            # Upload CSV to Blob (overwrite safe for current month or re-runs)
+            # CSV handling
             csv_client = container.get_blob_client(csv_blob)
-            with open(csv_path, "rb") as f:
-                csv_client.upload_blob(f, overwrite=True)
+            if csv_client.exists() and delete_existing_csv:
+                csv_client.delete_blob()
+                csv_deleted += 1
+                print("Deleted existing CSV blob (DELETE_EXISTING_CSV=yes)")
 
-            # Current month refresh: delete existing month facts first (if you have this proc)
+            if csv_client.exists() and not delete_existing_csv:
+                print("CSV exists → reuse (no reconvert)")
+            else:
+                # Download parquet to temp file
+                with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as pf:
+                    parquet_path = pf.name
+                    pf.write(parquet_client.download_blob().readall())
+
+                # Convert to CSV temp file
+                with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as cf:
+                    csv_path = cf.name
+
+                df = pd.read_parquet(parquet_path)
+                df.to_csv(csv_path, index=False)
+
+                # Upload CSV to Blob
+                with open(csv_path, "rb") as f:
+                    csv_client.upload_blob(f, overwrite=True)
+                print("Converted and uploaded CSV")
+
+            # Optional: current month refresh
             if already and is_current_month(y, m):
-                cur.execute("EXEC dbo.usp_delete_month_refresh @taxi_type=?, @year=?, @month=?", (TAXI_TYPE, y, m))
+                cur.execute("EXEC dbo.usp_delete_month_refresh @taxi_type=?, @year=?, @month=?",
+                            (TAXI_TYPE, y, m))
                 cn.commit()
 
-            # Log start (optional but recommended)
-            cur.execute("""
-                EXEC dbo.usp_log_download_start
-                    @taxi_type=?,
-                    @year=?,
-                    @month=?,
-                    @file_name=?,
-                    @file_url=?,
-                    @blob_path=?,
-                    @status=?,
-                    @message=?;
-            """, (
-                TAXI_TYPE, y, m,
-                f"yellow_tripdata_{y}-{m:02d}.csv",
-                parquet_blob,           # "source" reference
-                f"raw/{csv_blob}",       # blob path
-                "downloaded",
-                "Converted parquet in Blob → CSV in Blob → BULK INSERT → stage → fact"
-            ))
-            cn.commit()
+            # Log (if proc exists)
+            try:
+                cur.execute("""
+                    EXEC dbo.usp_log_download_start
+                        @taxi_type=?,
+                        @year=?,
+                        @month=?,
+                        @file_name=?,
+                        @file_url=?,
+                        @blob_path=?,
+                        @status=?,
+                        @message=?;
+                """, (
+                    TAXI_TYPE, y, m,
+                    f"yellow_tripdata_{y}-{m:02d}.csv",
+                    parquet_blob,
+                    f"raw/{csv_blob}",
+                    "downloaded",
+                    "Blob parquet → Blob CSV → BULK INSERT → stage → fact"
+                ))
+                cn.commit()
+            except Exception:
+                # If you don't have that proc, it's fine
+                cn.rollback()
 
-            # Load CSV → SQL RAW (TRUNCATE first because RAW is a landing table)
+            # Load CSV → SQL RAW
             cur.execute("TRUNCATE TABLE dbo.stg_yellow_trip_raw;")
             cn.commit()
 
@@ -159,10 +179,11 @@ def main():
             cn.commit()
 
             # typed staging → fact
-            cur.execute("EXEC dbo.usp_load_month_from_staging @taxi_type=?, @year=?, @month=?", (TAXI_TYPE, y, m))
+            cur.execute("EXEC dbo.usp_load_month_from_staging @taxi_type=?, @year=?, @month=?",
+                        (TAXI_TYPE, y, m))
             cn.commit()
 
-            print("SUCCESS → loaded month into FACT")
+            print("SUCCESS → month loaded into FACT")
             processed += 1
 
         except Exception as e:
@@ -179,7 +200,7 @@ def main():
 
     cur.close()
     cn.close()
-    print(f"\nDONE → processed={processed}, skipped={skipped}, failed={failed}")
+    print(f"\nDONE → processed={processed}, skipped={skipped}, failed={failed}, csv_deleted={csv_deleted}")
 
 if __name__ == "__main__":
     main()
